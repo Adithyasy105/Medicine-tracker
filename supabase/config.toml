@@ -1,0 +1,17 @@
+project_id = "replace-with-supabase-project-id"
+api_url = "https://your-project.supabase.co"
+db_schema = "public"
+
+[functions]
+ignore = ["node_modules", ".git", ".expo"]
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+
+# Magic Link / OTP Email Template
+[auth.email.template.magic_link]
+subject = "Your Login Code"
+content_path = "./supabase/templates/magic-link.html"
+

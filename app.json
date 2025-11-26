@@ -1,0 +1,59 @@
+{
+  "expo": {
+    "name": "MediCare+",
+    "slug": "medicinetracker",
+    "scheme": "medicinetracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.jpg",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/icon.jpg",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Capture medicine labels for scanning",
+        "NSUserNotificationUsageDescription": "Send reminders for medicines"
+      }
+    },
+    "android": {
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "POST_NOTIFICATIONS"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.jpg",
+        "backgroundColor": "#ffffff"
+      },
+      "useNextNotificationsApi": true,
+      "edgeToEdgeEnabled": true,
+      "package": "com.adithya_sy.medicinetracker"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#ffffff",
+          "sounds": []
+        }
+      ],
+      "expo-asset"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "66e9f2f9-61f3-4e56-b31a-609c92034ed0"
+      }
+    },
+    "owner": "adithya_sy"
+  }
+}
