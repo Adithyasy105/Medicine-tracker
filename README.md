@@ -1,30 +1,34 @@
-# Medicine Tracker App
+# Medicine Tracker App (MediCare+)
 
 > **A smart, offline-first family medicine tracking application powered by Expo, Supabase, and Generative AI.**
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Platform](https://img.shields.io/badge/platform-iOS%20%7C%20Android-lightgrey.svg)
+![Platform](https://img.shields.io/badge/platform-Android-green.svg)
 ![Status](https://img.shields.io/badge/status-Active-success.svg)
 
 ## Project Overview
 
-**Medicine Tracker** is a comprehensive mobile application designed to help caregivers and families manage medication schedules efficiently. It goes beyond simple reminders by integrating advanced AI features for prescription scanning and medical advice, all while ensuring data privacy and offline accessibility.
+**Medicine Tracker** (MediCare+) is a comprehensive mobile application designed to help caregivers and families manage medication schedules efficiently. It goes beyond simple reminders by integrating advanced AI features for prescription scanning and medical advice, all while ensuring data privacy and offline accessibility.
 
 Whether you are managing your own prescriptions or caring for multiple family members, this app provides a seamless, secure, and intelligent way to stay on top of health needs.
 
 ## Key Features
 
 ### AI-Powered Intelligence
--   **Smart Prescription Scanning**: Snap a photo of a medicine label, and our **Edge Functions** (using Google Cloud Vision OCR + Gemini LLM) will automatically extract the medicine name, dosage, and frequency.
+-   **Smart Prescription Scanning**: Snap a photo of a medicine label, and our **Edge Functions** (using Google Cloud Vision OCR + Gemini 2.0 Flash) will automatically extract the medicine name, dosage, and frequency.
 -   **Dr. AI Assistant**: A built-in chat interface powered by **Google Gemini 2.0 Flash**. Ask questions about drug interactions, side effects, or general health advice and get instant, evidence-based responses (with appropriate medical disclaimers).
 
-### Family & Profile Management
--   **Multi-Profile Support**: Create and manage separate profiles for each family member.
--   **Secure Data Isolation**: Powered by **Supabase Row Level Security (RLS)**, ensuring that users can only access data they are authorized to see.
+### Intelligent & Strict Notifications
+-   **Flood-Proof Scheduling**: Implements strict validation to prevent notification flooding. Notifications are **only** scheduled for future times.
+-   **Persistent Tracking**: Uses local storage to track "sent" status for every dose, ensuring you never get duplicate alerts for the same dose, even after restarting the phone.
+-   **Smart Alerts**:
+    -   **Low Stock**: Alerts you when supply runs low (with a 24-hour cooldown to prevent spam).
+    -   **Daily Summary**: A single summary notification at 9:00 PM to review the day's adherence.
+-   **Reliable Delivery**: Uses native Android scheduling to ensure notifications fire even if the app is completely closed.
 
-### Intelligent Notifications
--   **Local Reminders**: Reliable local notifications for daily doses, ensuring you never miss a pill even without internet.
--   **Smart Alerts**: Background jobs check for low stock and missed doses, sending push notifications to keep you informed.
+### Family & Profile Management
+-   **Multi-Profile Support**: Create and manage separate profiles for each family member (e.g., "Dad", "Mom", "Grandma").
+-   **Secure Data Isolation**: Powered by **Supabase Row Level Security (RLS)**, ensuring that users can only access data they are authorized to see.
 
 ### Offline-First Architecture
 -   **Robust Offline Support**: The app remains fully functional without an internet connection.
@@ -35,7 +39,7 @@ Whether you are managing your own prescriptions or caring for multiple family me
 ### Frontend
 -   **Framework**: [React Native](https://reactnative.dev/) with [Expo](https://expo.dev/) (SDK 50+)
 -   **Navigation**: React Navigation v7
--   **State/Data**: React Hooks, Custom Context Providers
+-   **State/Data**: React Hooks, Custom Context Providers, AsyncStorage
 -   **UI**: StyleSheet, Vector Icons, Safe Area Context
 
 ### Backend (Supabase)
@@ -43,10 +47,9 @@ Whether you are managing your own prescriptions or caring for multiple family me
 -   **Auth**: Supabase Auth (Email/Password)
 -   **Storage**: Supabase Storage (for prescription images)
 -   **Edge Functions**: Deno-based serverless functions for:
-    -   `scanMedicine`: OCR & Parsing
+    -   `scanMedicine`: OCR & Parsing (Google Vision + Gemini)
+    -   `chat`: AI Health Assistant (Gemini)
     -   `sendPush`: Notification delivery
-    -   `refillChecker`: Cron job for stock alerts
-    -   `missedDoseChecker`: Cron job for compliance tracking
 
 ### AI Services
 -   **LLM**: Google Gemini API (`gemini-2.0-flash`)
@@ -54,21 +57,18 @@ Whether you are managing your own prescriptions or caring for multiple family me
 
 ## Getting Started
 
-Follow these instructions to set up the project locally.
-
 ### Prerequisites
 -   **Node.js** (v18 or newer)
 -   **npm** or **yarn**
 -   **Expo CLI**: `npm install -g expo-cli`
--   **Supabase CLI**: `npm install -g supabase`
--   **Expo Go**: Installed on your iOS/Android device or an Emulator.
+-   **EAS CLI**: `npm install -g eas-cli` (For building APKs)
 
 ### Installation
 
 1.  **Clone the repository**
     ```bash
-    git clone <repository-url>
-    cd medicine-tracker
+    git clone https://github.com/Adithyasy105/Medicine-tracker.git
+    cd Medicine-tracker
     ```
 
 2.  **Install dependencies**
@@ -77,7 +77,7 @@ Follow these instructions to set up the project locally.
     ```
 
 3.  **Environment Configuration**
-    Create a `.env` file in the root directory (copy from `.env.example` if available) and add your keys:
+    Create a `.env` file in the root directory and add your keys:
 
     ```env
     # Supabase Configuration
@@ -88,40 +88,20 @@ Follow these instructions to set up the project locally.
     EXPO_PUBLIC_GEMINI_API_KEY=your-gemini-api-key
     ```
 
-### Backend Setup (Supabase)
+### Building the APK (Android)
 
-1.  **Initialize Supabase**
+To generate a standalone APK file for testing or distribution:
+
+1.  **Configure `eas.json`**:
+    Ensure your `eas.json` has the `apk` profile configured with your environment variables (or placeholders).
+
+2.  **Run the Build Command**:
     ```bash
-    supabase init
+    eas build -p android --profile apk
     ```
 
-2.  **Apply Migrations** (Pushes schema to your remote or local DB)
-    ```bash
-    supabase db push
-    ```
-
-3.  **Deploy Edge Functions**
-    ```bash
-    supabase functions deploy scanMedicine markTaken refillChecker missedDoseChecker sendPush
-    ```
-
-4.  **Set Edge Function Secrets**
-    ```bash
-    supabase secrets set --env-file ./supabase/.env
-    ```
-    *Ensure your `./supabase/.env` contains `VISION_API_KEY`, `OPENAI_API_KEY` (or `GEMINI_API_KEY`), and `SUPABASE_SERVICE_ROLE_KEY`.*
-
-### Running the App
-
-Start the Expo development server:
-
-```bash
-npx expo start
-```
-
--   Press `a` for Android Emulator.
--   Press `i` for iOS Simulator.
--   Scan the QR code with the **Expo Go** app on your physical device.
+3.  **Download**:
+    Once the build finishes, EAS will provide a link to download the `.apk` file.
 
 ## Project Structure
 
@@ -141,13 +121,14 @@ medicine-tracker/
 │   │   └── ...
 │   ├── services/        # Business logic & External services
 │   │   ├── OfflineQueue.js     # Sync logic
-│   │   └── Notifications.js
+│   │   └── Notifications.js    # Strict notification scheduling logic
 │   ├── theme/           # Design tokens (colors, spacing)
 │   └── utils/           # Helper functions
 ├── supabase/
 │   ├── functions/       # Edge Functions source code
 │   └── migrations/      # Database schema definitions
 ├── app.json             # Expo configuration
+├── eas.json             # EAS Build configuration
 ├── package.json         # Dependencies and scripts
 └── README.md            # Project documentation
 ```

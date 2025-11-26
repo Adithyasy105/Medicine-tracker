@@ -27,11 +27,15 @@ export const fetchMedicines = async () => {
     throw error;
   }
   console.log('Medicines fetched:', data?.length, 'records');
-  if (data?.length > 0) {
-    console.log('Sample medicine:', JSON.stringify(data[0], null, 2));
+
+  // De-duplicate medicines by ID just in case
+  const uniqueMedicines = data ? Array.from(new Map(data.map(m => [m.id, m])).values()) : [];
+
+  if (uniqueMedicines.length > 0) {
+    console.log('Sample medicine:', JSON.stringify(uniqueMedicines[0], null, 2));
   }
-  await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(data));
-  return data;
+  await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(uniqueMedicines));
+  return uniqueMedicines;
 };
 
 export const loadCachedMedicines = async () => {
@@ -311,10 +315,13 @@ export const fetchMedicineLogs = async (medicineId) => {
 
   const allLogs = [...offlineLogs, ...(serverLogs || [])];
 
-  // Update cache
-  logsCache[medicineId] = allLogs;
+  // De-duplicate logs by ID
+  const uniqueLogs = Array.from(new Map(allLogs.map(log => [log.id, log])).values());
 
-  return allLogs;
+  // Update cache
+  logsCache[medicineId] = uniqueLogs;
+
+  return uniqueLogs;
 };
 
 // Synchronous accessor for cache

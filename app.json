@@ -27,6 +27,7 @@
         "WRITE_EXTERNAL_STORAGE",
         "POST_NOTIFICATIONS"
       ],
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.jpg",
         "backgroundColor": "#ffffff"
@@ -51,9 +52,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "66e9f2f9-61f3-4e56-b31a-609c92034ed0"
+        "projectId": "6de406d1-63c0-4add-8c7c-7e292cb665d3"
       }
     },
-    "owner": "adithya_sy"
+    "owner": "adithya_sy2"
   }
 }

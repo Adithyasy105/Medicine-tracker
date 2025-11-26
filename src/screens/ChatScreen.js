@@ -2,10 +2,8 @@ import React, { useState, useRef } from 'react';
 import { ActivityIndicator, FlatList, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+import { supabase } from '../lib/supabase';
 
 const initialMessage = {
   id: 'intro',
@@ -32,24 +30,6 @@ export const ChatScreen = () => {
     setMessages((prev) => [...prev, { id: botMessageId, role: 'bot', text: '...' }]);
 
     try {
-      if (!GEMINI_API_KEY) {
-        throw new Error('Gemini API Key is missing. Please check your .env file.');
-      }
-
-      // Using gemini-2.0-flash as requested by user
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-      const chat = model.startChat({
-        history: messages
-          .filter((m) => m.id !== 'intro')
-          .map((m) => ({
-            role: m.role === 'user' ? 'user' : 'model',
-            parts: [{ text: m.text }],
-          })),
-        generationConfig: {
-          maxOutputTokens: 500,
-        },
-      });
-
       const systemPrompt = `You are a friendly and empathetic medical assistant acting as a Doctor. 
       Your responses must be:
       1. **Short and Concise**: Avoid long paragraphs.
@@ -60,13 +40,29 @@ export const ChatScreen = () => {
       Always include a brief disclaimer that you are an AI and not a substitute for professional medical advice.
       If the user asks about non-medical topics, politely redirect them.`;
 
-      const result = await chat.sendMessage(`${systemPrompt}\n\nUser Query: ${prompt}`);
-      const response = await result.response;
-      const fullText = response.text();
+      const history = messages
+        .filter((m) => m.id !== 'intro')
+        .map((m) => ({
+          role: m.role === 'user' ? 'user' : 'model',
+          text: m.text,
+        }));
 
-      // Simulate streaming (Typewriter effect) since RN fetch stream is unstable
+      // Add current message
+      history.push({ role: 'user', text: `${systemPrompt}\n\nUser Query: ${prompt}` });
+
+      const { data, error } = await supabase.functions.invoke('chat', {
+        body: { messages: history },
+      });
+
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      if (!data) throw new Error('No data received from chat service');
+
+      const fullText = data.text || "I'm sorry, I couldn't generate a response.";
+
+      // Simulate streaming (Typewriter effect)
       let currentText = '';
-      const chunkSize = 4; // Characters to add per interval
+      const chunkSize = 4;
 
       for (let i = 0; i < fullText.length; i += chunkSize) {
         currentText = fullText.slice(0, i + chunkSize);
@@ -80,7 +76,6 @@ export const ChatScreen = () => {
           return newMessages;
         });
 
-        // Short delay to mimic typing speed
         await new Promise(resolve => setTimeout(resolve, 10));
       }
 

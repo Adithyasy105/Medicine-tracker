@@ -5,6 +5,14 @@ import Constants from 'expo-constants';
 import { supabase, tables } from '../lib/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+const PUSH_TOKEN_STORAGE_KEY = 'push_token_cache';
+
+// deterministic id helper (reuse in file)
+const todayKey = (ts = Date.now()) => {
+  const d = new Date(ts);
+  return d.toISOString().split('T')[0]; // Using YYYY-MM-DD for consistency
+};
+
 // Set up notification handler with enhanced settings
 Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
@@ -92,44 +100,45 @@ export const registerForPushNotificationsAsync = async () => {
     return null;
   }
 
+  // return cached token if found
+  try {
+    const cached = await AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
+    if (cached) return cached;
+  } catch (e) { /* ignore */ }
+
   const settings = await Notifications.getPermissionsAsync();
   let finalStatus = settings.status;
-
   if (finalStatus !== 'granted') {
     const request = await Notifications.requestPermissionsAsync({
-      ios: {
-        allowAlert: true,
-        allowBadge: true,
-        allowSound: true,
-        allowAnnouncements: true,
-      },
+      ios: { allowAlert: true, allowBadge: true, allowSound: true, allowAnnouncements: true },
     });
     finalStatus = request.status;
   }
-
   if (finalStatus !== 'granted') {
     console.warn('Push notification permission denied');
     return null;
   }
 
-  // Initialize channels after permissions granted
   await initializeNotificationChannels();
 
-  const projectId = Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
+  const projectId =
+    Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
   if (!projectId) {
     console.warn('Expo projectId missing; push token unavailable in Expo Go');
     return null;
   }
 
-  let token = null;
   try {
-    token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+    const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
+    const token = tokenData?.data ?? null;
+    if (token) {
+      await AsyncStorage.setItem(PUSH_TOKEN_STORAGE_KEY, token);
+    }
+    return token;
   } catch (err) {
     console.warn('Device token registration failed', err);
     return null;
   }
-
-  return token;
 };
 
 export const upsertDeviceToken = async () => {
@@ -139,20 +148,20 @@ export const upsertDeviceToken = async () => {
   const pushToken = await registerForPushNotificationsAsync();
   if (!pushToken) return null;
 
-  const deviceId = `${Device.deviceName ?? 'unknown'}-${Device.osInternalBuildId ?? Date.now()}`;
+  const payload = {
+    user_id: session.user.id,
+    push_token: pushToken,
+    device_id: pushToken, // stable device id
+    platform: Platform.OS,
+    last_seen: new Date().toISOString(),
+  };
 
-  const { error } = await supabase.from(tables.devices).upsert(
-    {
-      user_id: session.user.id,
-      push_token: pushToken,
-      device_id: deviceId,
-      platform: Platform.OS,
-      last_seen: new Date().toISOString(),
-    },
-    { onConflict: 'user_id,device_id' },
-  );
+  const { error } = await supabase.from(tables.devices).upsert(payload, { onConflict: 'push_token' });
+  if (error) {
+    console.error('Failed to upsert device token:', error);
+    throw error;
+  }
 
-  if (error) throw error;
   return pushToken;
 };
 
@@ -192,57 +201,71 @@ export const scheduleLocalReminder = async ({ id, title, body, trigger, medicine
  */
 export const sendLowStockAlert = async ({ medicineId, medicineName, currentQuantity, threshold }) => {
   try {
-    return await Notifications.scheduleNotificationAsync({
-      identifier: `low-stock-${medicineId}-${Date.now()}`,
+    const id = `low-stock-${medicineId}-${todayKey()}`;
+    const lastKey = `last_stock_alert_${medicineId}`;
+    const last = await AsyncStorage.getItem(lastKey);
+    const now = Date.now();
+    const COOLDOWN = 24 * 60 * 60 * 1000;
+    if (last && (now - parseInt(last, 10)) < COOLDOWN) {
+      console.log(`Low-stock alert already sent today for ${medicineName}`);
+      return null;
+    }
+
+    const res = await Notifications.scheduleNotificationAsync({
+      identifier: id,
       content: {
         title: '⚠️ Refill Reminder',
         body: `${medicineName}: ${currentQuantity} dose${currentQuantity !== 1 ? 's' : ''} remaining. Please consider refilling soon.`,
-        data: {
-          type: 'low-stock',
-          medicineId,
-          medicineName,
-          currentQuantity,
-          threshold,
-        },
+        data: { type: 'low-stock', medicineId, medicineName, currentQuantity, threshold },
         sound: 'default',
         badge: 1,
         priority: 'high',
-        ...(Platform.OS === 'android' && {
-          channelId: NOTIFICATION_CHANNELS.LOW_STOCK_ALERTS.id,
-        }),
+        ...(Platform.OS === 'android' && { channelId: NOTIFICATION_CHANNELS.LOW_STOCK_ALERTS.id }),
       },
-      trigger: null, // Send immediately
+      trigger: null,
     });
+
+    await AsyncStorage.setItem(lastKey, now.toString());
+    // also mark as sent today so schedule logic respects it
+    await AsyncStorage.setItem(`notification_sent_${id}_${todayKey()}`, 'true');
+
+    return res;
   } catch (error) {
     console.error('Failed to send low stock alert:', error);
     throw error;
   }
 };
 
-/**
- * Send out of stock notification
- */
 export const sendOutOfStockAlert = async ({ medicineId, medicineName }) => {
   try {
-    return await Notifications.scheduleNotificationAsync({
-      identifier: `out-of-stock-${medicineId}-${Date.now()}`,
+    const id = `out-of-stock-${medicineId}-${todayKey()}`;
+    const lastKey = `last_out_of_stock_${medicineId}`;
+    const last = await AsyncStorage.getItem(lastKey);
+    const now = Date.now();
+    const COOLDOWN = 24 * 60 * 60 * 1000;
+    if (last && (now - parseInt(last, 10)) < COOLDOWN) {
+      console.log(`Out-of-stock alert already sent today for ${medicineName}`);
+      return null;
+    }
+
+    const res = await Notifications.scheduleNotificationAsync({
+      identifier: id,
       content: {
         title: '🚨 Urgent: Medication Out of Stock',
         body: `${medicineName} has run out. Please refill immediately to continue your treatment.`,
-        data: {
-          type: 'out-of-stock',
-          medicineId,
-          medicineName,
-        },
+        data: { type: 'out-of-stock', medicineId, medicineName },
         sound: 'default',
         badge: 1,
         priority: 'max',
-        ...(Platform.OS === 'android' && {
-          channelId: NOTIFICATION_CHANNELS.OUT_OF_STOCK.id,
-        }),
+        ...(Platform.OS === 'android' && { channelId: NOTIFICATION_CHANNELS.OUT_OF_STOCK.id }),
       },
-      trigger: null, // Send immediately
+      trigger: null,
     });
+
+    await AsyncStorage.setItem(lastKey, now.toString());
+    await AsyncStorage.setItem(`notification_sent_${id}_${todayKey()}`, 'true');
+
+    return res;
   } catch (error) {
     console.error('Failed to send out of stock alert:', error);
     throw error;
@@ -268,14 +291,25 @@ export const cancelMedicineNotifications = async (medicineId) => {
 };
 
 /**
+ * Helper to normalize time for IDs (ensure HH:MM format)
+ */
+const normalizeTimeId = (time) => {
+  const [h, m] = time.split(':').map(Number);
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+};
+
+/**
  * Helper to generate consistent notification IDs
  */
-const getNotificationIds = (medicineId, time) => ({
-  pre: `${medicineId}-${time}-pre`,
-  due: `${medicineId}-${time}-due`,
-  post: `${medicineId}-${time}-post`,
-  summary: `${medicineId}-${time}-summary`
-});
+const getNotificationIds = (medicineId, time) => {
+  const normalizedTime = normalizeTimeId(time);
+  return {
+    pre: `${medicineId}-${normalizedTime}-pre`,
+    due: `${medicineId}-${normalizedTime}-due`,
+    post: `${medicineId}-${normalizedTime}-post`,
+    summary: `${medicineId}-${normalizedTime}-summary`
+  };
+};
 
 /**
  * Cancel reminders for a specific dose (called when marked taken)
@@ -348,6 +382,115 @@ export const addNotificationReceivedListener = (callback) => {
   return Notifications.addNotificationReceivedListener(callback);
 };
 
+let _receivedSub = null;
+let _responseSub = null;
+
+export const startNotificationListeners = () => {
+  // if already started, do nothing
+  if (_receivedSub || _responseSub) return;
+
+  _receivedSub = Notifications.addNotificationReceivedListener(async (notification) => {
+    try {
+      const id = notification.request.identifier;
+      if (!id) return;
+      const key = `notification_sent_${id}_${todayKey()}`;
+      await AsyncStorage.setItem(key, 'true');
+    } catch (e) {
+      console.warn('Failed to mark received', e);
+    }
+  });
+
+  _responseSub = Notifications.addNotificationResponseReceivedListener(async (response) => {
+    try {
+      const id = response.notification.request.identifier;
+      if (!id) return;
+      const key = `notification_sent_${id}_${todayKey()}`;
+      await AsyncStorage.setItem(key, 'true');
+    } catch (e) {
+      console.warn('Failed to mark response', e);
+    }
+  });
+
+  return () => {
+    // cleanup function
+    if (_receivedSub) _receivedSub.remove();
+    if (_responseSub) _responseSub.remove();
+    _receivedSub = null;
+    _responseSub = null;
+  };
+};
+
+/**
+ * Schedule all daily reminders for a medicine
+ */
+/**
+ * Helper to get the unique key for a notification sent today
+ */
+const getSentKey = (id) => {
+  return `notification_sent_${id}_${todayKey()}`;
+};
+
+/**
+ * Check if a notification has already been sent today
+ */
+export const hasNotificationBeenSentToday = async (id) => {
+  try {
+    const key = getSentKey(id);
+    const sent = await AsyncStorage.getItem(key);
+    return sent === 'true';
+  } catch (e) {
+    console.error('Error checking sent status:', e);
+    return false;
+  }
+};
+
+/**
+ * Mark a notification as sent for today
+ */
+export const markNotificationAsSentToday = async (id) => {
+  try {
+    const key = getSentKey(id);
+    await AsyncStorage.setItem(key, 'true');
+  } catch (e) {
+    console.error('Error marking notification as sent:', e);
+  }
+};
+
+/**
+ * Clear all notification state and cancel schedules on logout
+ */
+export const clearNotificationStateOnLogout = async () => {
+  try {
+    console.log('Clearing all notification state on logout...');
+    // Remove server device record
+    const token = await AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
+    if (token) {
+      try {
+        await supabase.from(tables.devices).delete().eq('push_token', token);
+      } catch (e) { console.warn('Failed to delete device row', e); }
+    }
+
+    // Cancel scheduled notifications safely
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    for (const s of scheduled) {
+      try { await Notifications.cancelScheduledNotificationAsync(s.identifier); } catch (e) { }
+    }
+
+    // Dismiss any displayed notifications
+    try { await Notifications.dismissAllNotificationsAsync(); } catch (e) { }
+
+    // Clear persisted flags for today and token
+    const keys = await AsyncStorage.getAllKeys();
+    const removeKeys = keys.filter(k => k.startsWith('notification_sent_') || k.startsWith('last_stock_alert_') || k === 'last_notification_reschedule');
+    if (removeKeys.length) await AsyncStorage.multiRemove(removeKeys);
+
+    await AsyncStorage.removeItem(PUSH_TOKEN_STORAGE_KEY);
+    console.log('Notification state cleared.');
+  } catch (e) {
+    console.error('Failed to clear notifications on logout:', e);
+  }
+};
+
 /**
  * Schedule all daily reminders for a medicine
  */
@@ -358,85 +501,112 @@ export const scheduleAllRemindersForMedicine = async (medicine) => {
       return;
     }
 
-    // Cancel existing notifications for this medicine first
-    await cancelMedicineNotifications(medicine.id);
-
-    const scheduledNotifications = [];
+    // 1. Calculate all EXPECTED notification IDs for this medicine
+    const expectedIds = new Set();
+    const notificationsToSchedule = [];
 
     for (const time of medicine.times) {
-      // Parse time (format: "HH:MM")
+      const ids = getNotificationIds(medicine.id, time);
       const [hours, minutes] = time.split(':').map(Number);
       const formattedTime = formatTime(time);
-      const ids = getNotificationIds(medicine.id, time);
 
-      // 1. Pre-Reminder (5 mins before)
-      // We need to calculate the trigger carefully. 
-      // Since 'repeats: true' with 'hour/minute' works for daily, we can't easily do "5 mins before" using just hour/minute if it crosses midnight.
-      // But for simplicity, we'll just subtract 5 mins.
+      // Pre-calculation logic...
       let preHour = hours;
       let preMinute = minutes - 5;
-      if (preMinute < 0) {
-        preMinute += 60;
-        preHour -= 1;
-      }
+      if (preMinute < 0) { preMinute += 60; preHour -= 1; }
       if (preHour < 0) preHour += 24;
 
-      await scheduleLocalReminder({
-        id: ids.pre,
-        title: '⏳ Upcoming Dose',
-        body: `Take ${medicine.name} in 5 minutes (${formattedTime})`,
-        trigger: { hour: preHour, minute: preMinute, repeats: true },
-        medicineName: medicine.name,
-        type: 'pre-reminder'
-      });
-
-      // 2. Due Reminder (At time)
-      await scheduleLocalReminder({
-        id: ids.due,
-        title: '💊 Time to Take Medicine',
-        body: `It's ${formattedTime}. Please take ${medicine.name} now.`,
-        trigger: { hour: hours, minute: minutes, repeats: true },
-        medicineName: medicine.name,
-        type: 'due-reminder'
-      });
-
-      // 3. Post-Reminder (5 mins after - Missed)
       let postHour = hours;
       let postMinute = minutes + 5;
-      if (postMinute >= 60) {
-        postMinute -= 60;
-        postHour += 1;
-      }
+      if (postMinute >= 60) { postMinute -= 60; postHour += 1; }
       if (postHour >= 24) postHour -= 24;
 
-      await scheduleLocalReminder({
-        id: ids.post,
-        title: '⚠️ Missed Dose?',
-        body: `Did you take ${medicine.name} at ${formattedTime}? Mark it as taken if you did.`,
-        trigger: { hour: postHour, minute: postMinute, repeats: true },
-        medicineName: medicine.name,
-        type: 'post-reminder'
-      });
+      // Define expected notifications
+      const items = [
+        {
+          id: ids.pre,
+          content: { title: '⏳ Upcoming Dose', body: `Take ${medicine.name} in 5 minutes (${formattedTime})`, type: 'pre-reminder' },
+          trigger: { hour: preHour, minute: preMinute, repeats: true }
+        },
+        {
+          id: ids.due,
+          content: { title: '💊 Time to Take Medicine', body: `It's ${formattedTime}. Please take ${medicine.name} now.`, type: 'due-reminder' },
+          trigger: { hour: hours, minute: minutes, repeats: true }
+        },
+        {
+          id: ids.post,
+          content: { title: '⚠️ Missed Dose?', body: `Did you take ${medicine.name} at ${formattedTime}? Mark it as taken if you did.`, type: 'post-reminder' },
+          trigger: { hour: postHour, minute: postMinute, repeats: true }
+        }
+      ];
 
-      // 4. Summary Reminder (9:00 PM)
-      // Only schedule if the dose time is BEFORE 9:00 PM (21:00)
-      // If dose is at 21:00 or later, a 21:00 summary is confusing or impossible for that day.
-      if (hours < 21) {
-        await scheduleLocalReminder({
-          id: ids.summary,
-          title: '🌙 Daily Summary',
-          body: `You might have missed ${medicine.name} scheduled for ${formattedTime}. Please check your logs.`,
-          trigger: { hour: 21, minute: 0, repeats: true },
-          medicineName: medicine.name,
-          type: 'summary-reminder'
-        });
+      // Removed per-medicine summary to prevent flooding
+      // if (hours < 21) { ... }
+
+      const now = new Date();
+
+      // Use for...of loop to handle async checks correctly
+      for (const item of items) {
+        // FLOOD PROTECTION 1: STRICT TIME VALIDATION
+        const triggerDate = new Date();
+        triggerDate.setHours(item.trigger.hour, item.trigger.minute, 0, 0);
+
+        if (triggerDate < now) {
+          // Time has passed for today. Skip.
+          continue;
+        }
+
+        // FLOOD PROTECTION 2: PERSISTENT SENT FLAG
+        const alreadySent = await hasNotificationBeenSentToday(item.id);
+        if (alreadySent) {
+          console.log(`Skipping already sent notification: ${item.id}`);
+          continue;
+        }
+
+        expectedIds.add(item.id);
+        notificationsToSchedule.push(item);
       }
-
-      scheduledNotifications.push({ id: ids.due, time });
     }
 
-    console.log(`Scheduled advanced reminders for ${medicine.name}`);
-    return scheduledNotifications;
+    // 2. Fetch ALL existing notifications
+    const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
+
+    // 3. Identify notifications related to this medicine
+    const medicineNotifications = allScheduled.filter(n =>
+      n.identifier.startsWith(`${medicine.id}-`) || n.identifier.includes(medicine.id)
+    );
+
+    // 4. Cancel UNEXPECTED notifications (cleanup duplicates/old times)
+    for (const notif of medicineNotifications) {
+      if (!expectedIds.has(notif.identifier)) {
+        console.log(`Cancelling obsolete notification: ${notif.identifier}`);
+        await Notifications.cancelScheduledNotificationAsync(notif.identifier);
+      }
+    }
+
+    // 5. Schedule MISSING notifications
+    const existingIdSet = new Set(medicineNotifications.map(n => n.identifier));
+
+    for (const item of notificationsToSchedule) {
+      if (!existingIdSet.has(item.id)) {
+        try {
+          console.log(`Scheduling missing notification: ${item.id}`);
+          await scheduleLocalReminder({
+            id: item.id,
+            ...item.content,
+            trigger: item.trigger,
+            medicineName: medicine.name
+          });
+          // tiny throttle to avoid bursts on some devices
+          await new Promise(r => setTimeout(r, 40));
+        } catch (e) {
+          console.warn('Failed to schedule single notification, continuing:', item.id, e);
+        }
+      }
+    }
+
+    console.log(`Synced reminders for ${medicine.name}`);
+    return notificationsToSchedule;
   } catch (error) {
     console.error('Failed to schedule reminders for medicine:', error);
     throw error;
@@ -455,6 +625,17 @@ export const checkAndSendStockAlerts = async (medicine) => {
     const quantity = medicine.quantity;
     const threshold = medicine.refill_threshold || 5; // Default threshold of 5
 
+    // Check cooldown to prevent flooding (max 1 alert per medicine per day)
+    const lastAlertKey = `last_stock_alert_${medicine.id}`;
+    const lastAlert = await AsyncStorage.getItem(lastAlertKey);
+    const now = Date.now();
+    const COOLDOWN = 24 * 60 * 60 * 1000; // 24 hours
+
+    if (lastAlert && (now - parseInt(lastAlert, 10)) < COOLDOWN) {
+      console.log(`Skipping stock alert for ${medicine.name} (cooldown active)`);
+      return;
+    }
+
     // Out of stock - critical alert
     if (quantity === 0) {
       await sendOutOfStockAlert({
@@ -462,6 +643,7 @@ export const checkAndSendStockAlerts = async (medicine) => {
         medicineName: medicine.name,
       });
       console.log(`Out of stock alert sent for ${medicine.name}`);
+      await AsyncStorage.setItem(lastAlertKey, now.toString());
     }
     // Low stock - warning alert
     else if (quantity <= threshold && quantity > 0) {
@@ -472,6 +654,7 @@ export const checkAndSendStockAlerts = async (medicine) => {
         threshold: threshold,
       });
       console.log(`Low stock alert sent for ${medicine.name} (${quantity} left)`);
+      await AsyncStorage.setItem(lastAlertKey, now.toString());
     }
   } catch (error) {
     console.error('Failed to send stock alerts:', error);
@@ -485,6 +668,16 @@ export const checkAndSendStockAlerts = async (medicine) => {
 export const rescheduleAllMedicineNotifications = async () => {
   try {
     console.log('Rescheduling all medicine notifications...');
+
+    const last = await AsyncStorage.getItem('last_notification_reschedule');
+    if (last) {
+      const lastDate = new Date(last);
+      // Check if it was rescheduled today
+      if (lastDate.toISOString().split('T')[0] === todayKey()) {
+        console.log('Reschedule already ran today; skipping');
+        return;
+      }
+    }
 
     // Get current user session
     const { data: { session } } = await supabase.auth.getSession();
@@ -517,6 +710,25 @@ export const rescheduleAllMedicineNotifications = async () => {
     }
 
     console.log(`Successfully rescheduled ${totalScheduled} notifications for ${medicines.length} medicines`);
+
+    // Schedule a single daily summary for the user
+    const scheduleDailySummaryIfMissing = async (userId) => {
+      try {
+        const summaryId = `daily-summary-${userId}`;
+        const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+        if (!scheduled.some(n => n.identifier === summaryId)) {
+          await scheduleLocalReminder({
+            id: summaryId,
+            title: '🌙 Daily Summary',
+            body: "Check today's missed doses and refill suggestions.",
+            type: 'daily-summary',
+            trigger: { hour: 21, minute: 0, repeats: true },
+          });
+        }
+      } catch (e) { console.warn('Failed scheduleDailySummaryIfMissing', e); }
+    };
+
+    await scheduleDailySummaryIfMissing(session.user.id);
 
     // Store last reschedule time
     await AsyncStorage.setItem('last_notification_reschedule', new Date().toISOString());

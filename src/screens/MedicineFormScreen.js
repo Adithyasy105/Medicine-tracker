@@ -9,12 +9,14 @@ import { useProfiles } from '../hooks/useProfiles';
 import { ProfileSelector } from '../components/ProfileSelector';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { supabase, storageBucket } from '../lib/supabase';
+import * as FileSystem from 'expo-file-system/legacy';
+import { decode } from 'base64-arraybuffer';
 import { TimePickerModal } from '../components/TimePickerModal';
 import { colors, shadows, borderRadius, spacing } from '../theme/colors';
 
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+// const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+// const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 const defaultForm = {
   name: '',
@@ -129,35 +131,53 @@ export const MedicineFormScreen = ({ navigation }) => {
         mediaTypes: 'images',
         allowsEditing: true,
         quality: 0.5,
-        base64: true,
       });
 
-      if (!result.canceled && result.assets[0].base64) {
+      if (!result.canceled && result.assets[0]) {
         setScanning(true);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+        const uri = result.assets[0].uri;
 
-        const prompt = "Analyze this medicine image. Extract details in JSON: name, brand, dosage, form, expiry_date (YYYY-MM-DD), manufacturer. Return ONLY valid JSON.";
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) throw new Error('User not authenticated');
 
-        const imagePart = {
-          inlineData: {
-            data: result.assets[0].base64,
-            mimeType: 'image/jpeg',
-          },
-        };
+        const fileExt = uri.split('.').pop();
+        const fileName = `${Date.now()}.${fileExt}`;
+        const filePath = `${user.id}/${fileName}`;
 
-        const generatedContent = await model.generateContent([prompt, imagePart]);
-        const response = await generatedContent.response;
-        const text = response.text();
-        const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const data = JSON.parse(jsonStr);
+        // Upload image to Supabase Storage
+        const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+        const arrayBuffer = decode(base64);
+
+        const { error: uploadError } = await supabase.storage
+          .from(storageBucket)
+          .upload(filePath, arrayBuffer, {
+            contentType: fileExt === 'png' ? 'image/png' : 'image/jpeg',
+            upsert: true,
+          });
+
+        if (uploadError) throw uploadError;
+
+        // Call Edge Function
+        const { data, error: funcError } = await supabase.functions.invoke('scanMedicine', {
+          body: { imagePath: filePath },
+        });
+
+        if (funcError) throw funcError;
+
+        const { parsed } = data;
 
         setForm(prev => ({
           ...prev,
-          name: data.name || prev.name,
-          brand: data.brand || prev.brand,
-          dosage: data.dosage || prev.dosage,
-          form: data.form || prev.form,
-          expiry_date: data.expiry_date || prev.expiry_date,
+          name: parsed.name || prev.name,
+          brand: parsed.brand || prev.brand,
+          dosage: parsed.dosage || prev.dosage,
+          form: parsed.form || prev.form,
+          expiry_date: parsed.expiry_date || prev.expiry_date,
+          // Also map other fields if available
+          unit_per_dose: parsed.unit_per_dose || prev.unit_per_dose,
+          quantity: parsed.quantity || prev.quantity,
+          manufacturer: parsed.manufacturer || prev.manufacturer,
+          instructions: parsed.instructions || prev.instructions,
         }));
         Alert.alert('Scanned!', 'Medicine details updated from image.');
       }
@@ -246,8 +266,8 @@ export const MedicineFormScreen = ({ navigation }) => {
           <View>
             <Text style={styles.label}>Times *</Text>
             <View style={styles.timeChips}>
-              {form.times.map((time) => (
-                <View key={time} style={styles.timeChip}>
+              {form.times.map((time, index) => (
+                <View key={`${time}-${index}`} style={styles.timeChip}>
                   <Text style={styles.timeChipText}>{time}</Text>
                   <TouchableOpacity onPress={() => removeTime(time)}>
                     <Ionicons name="close-circle" size={18} color={colors.primary[700]} />

@@ -16,7 +16,9 @@ export const useProfiles = () => {
         throw err;
       }
       console.log('Profiles fetched:', data);
-      setProfiles(data ?? []);
+      // De-duplicate profiles
+      const uniqueProfiles = data ? Array.from(new Map(data.map(p => [p.id, p])).values()) : [];
+      setProfiles(uniqueProfiles);
     } catch (err) {
       console.error('Load profiles failed:', err);
       setError(err);

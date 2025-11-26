@@ -410,8 +410,8 @@ export const MedicineDetailScreen = ({ route, navigation }) => {
           {filteredLogs.length === 0 ? (
             <Text style={styles.emptyText}>No history for {months[selectedMonth]} {selectedYear}.</Text>
           ) : (
-            filteredLogs.map(log => (
-              <View key={log.id} style={styles.logRow}>
+            filteredLogs.map((log, index) => (
+              <View key={`${log.id}-${index}`} style={styles.logRow}>
                 <Text style={styles.logDate}>{format(new Date(log.time_taken), 'MMM dd, hh:mm a')}</Text>
                 <Text style={styles.logDate}>
                   {log.time_scheduled && log.time_scheduled.includes('T')

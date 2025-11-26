@@ -11,11 +11,11 @@ export const ProfileSelector = ({ profiles, selectedProfileId, onSelect }) => {
   }
   return (
     <View style={styles.container}>
-      {profiles.map((profile) => {
+      {profiles.map((profile, index) => {
         const isSelected = profile.id === selectedProfileId;
         return (
           <Pressable
-            key={profile.id}
+            key={`${profile.id}-${index}`}
             style={[styles.chip, isSelected && styles.chipSelected]}
             onPress={() => onSelect(profile.id)}
           >

@@ -2,11 +2,10 @@ import React, { useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View, Image, TouchableOpacity, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Ionicons } from '@expo/vector-icons';
-
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+import { supabase, storageBucket } from '../lib/supabase';
+import * as FileSystem from 'expo-file-system/legacy';
+import { decode } from 'base64-arraybuffer';
 
 export const ScanScreen = ({ navigation }) => {
   const [image, setImage] = useState(null);
@@ -20,52 +19,55 @@ export const ScanScreen = ({ navigation }) => {
         mediaTypes: 'images',
         allowsEditing: true,
         quality: 0.5,
-        base64: true,
       });
 
       if (!result.canceled && result.assets[0]) {
         setImage(result.assets[0]);
-        analyzeImage(result.assets[0].base64);
+        analyzeImage(result.assets[0].uri);
       }
     } catch (err) {
       Alert.alert('Error', 'Failed to capture image.');
     }
   };
 
-  const analyzeImage = async (base64) => {
+  const analyzeImage = async (uri) => {
     try {
       setAnalyzing(true);
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-      const prompt = `Analyze this medicine label/package. Extract the following details in JSON format:
-      - name (medicine name)
-      - brand (manufacturer or brand name)
-      - dosage (strength e.g. 500mg)
-      - form (Tablet, Capsule, Syrup, Injection, Cream, Drops, Inhaler)
-      - quantity (total count if visible)
-      - expiry_date (YYYY-MM-DD)
-      - instructions (e.g. "After food", "With water")
-      - purpose (what is it used for? e.g. "Pain relief", "Fever")
-      - frequency (how often? e.g. "Twice a day")
-      
-      Return ONLY valid JSON. If a field is not found, use null.`;
 
-      const imagePart = {
-        inlineData: {
-          data: base64,
-          mimeType: 'image/jpeg',
-        },
-      };
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
 
-      const result = await model.generateContent([prompt, imagePart]);
-      const response = await result.response;
-      const text = response.text();
-      const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      const data = JSON.parse(jsonStr);
+      const fileExt = uri.split('.').pop();
+      const fileName = `${Date.now()}.${fileExt}`;
+      const filePath = `${user.id}/${fileName}`;
+
+      // Upload image to Supabase Storage
+      // Use FileSystem + ArrayBuffer (most reliable in Expo)
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+      const arrayBuffer = decode(base64);
+
+      const { error: uploadError } = await supabase.storage
+        .from(storageBucket)
+        .upload(filePath, arrayBuffer, {
+          contentType: fileExt === 'png' ? 'image/png' : 'image/jpeg',
+          upsert: true,
+        });
+
+      if (uploadError) throw uploadError;
+
+      // Call Edge Function
+      const { data, error: funcError } = await supabase.functions.invoke('scanMedicine', {
+        body: { imagePath: filePath },
+      });
+
+      if (funcError) throw funcError;
+
+      const { parsed } = data;
 
       // Map AI fields to Form fields
       const mappedData = {
-        ...data,
-        notes: data.purpose ? `Used for: ${data.purpose}\n${data.frequency || ''}` : data.notes,
+        ...parsed,
+        notes: parsed.purpose ? `Used for: ${parsed.purpose}\n${parsed.frequency || ''}` : parsed.notes,
       };
 
       setParsed(mappedData);
